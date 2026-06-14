@@ -1,49 +1,62 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type SpittoType = "500" | "1000" | "2000";
+type ApiSpittoType = "SP500" | "SP1000" | "SP2000";
 
 interface NotificationCondition {
-  id: string;
-  spittoType: SpittoType;
+  id: number;
+  spittoType: ApiSpittoType;
   releaseRate: number;
-  firstPrizeMin: number;
-  secondPrizeMin: number;
-  enabled: boolean;
+  rnk1RemainingMin: number | null;
+  rnk2RemainingMin: number | null;
+  createdAt: string;
 }
 
+const API_SPITTO_MAP: Record<ApiSpittoType, SpittoType> = {
+  SP500: "500",
+  SP1000: "1000",
+  SP2000: "2000",
+};
+
 const SPITTO_TYPES = [
-  { value: "500" as SpittoType, label: "스피또 500", faceValue: 500 },
-  { value: "1000" as SpittoType, label: "스피또 1000", faceValue: 1000 },
-  { value: "2000" as SpittoType, label: "스피또 2000", faceValue: 2000 },
+  { value: "500" as SpittoType, label: "스피또 500", faceValue: 500, avgPblcnQty: 20_000_000 },
+  { value: "1000" as SpittoType, label: "스피또 1000", faceValue: 1000, avgPblcnQty: 57_500_000 },
+  { value: "2000" as SpittoType, label: "스피또 2000", faceValue: 2000, avgPblcnQty: 35_000_000 },
 ];
 
-function calcExpectedValue(
-  faceValue: number,
-  releaseRate: number,
-  firstPrize: number,
-  secondPrize: number,
-): number {
-  const base = faceValue * (releaseRate / 100);
-  const bonus = firstPrize * faceValue * 0.05 + secondPrize * faceValue * 0.02;
-  return Math.round(base + bonus);
+function calcProbability(numerator: number, denominator: number): number {
+  return denominator > 0 ? (numerator / denominator) * 100 : 0;
 }
 
 function CounterButton({
   label,
   value,
   onChange,
+  selected,
+  onSelect,
 }: {
   label: string;
   value: number;
   onChange: (v: number) => void;
+  selected: boolean;
+  onSelect: () => void;
 }) {
   return (
-    <div>
-      <p className="mb-2 text-sm font-medium text-zinc-700">{label}</p>
-      <div className="flex items-center gap-3">
+    <div className={selected ? "" : "opacity-40"}>
+      <label className="mb-2 flex cursor-pointer items-center gap-2">
+        <input
+          type="radio"
+          checked={selected}
+          onChange={onSelect}
+          className="h-4 w-4 cursor-pointer accent-[#0066b3]"
+        />
+        <span className="text-sm font-medium text-zinc-700">{label}</span>
+      </label>
+      <div className="flex items-center gap-3 pl-6">
         <button
-          onClick={() => onChange(Math.max(0, value - 1))}
-          className="flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-300 text-lg font-medium text-zinc-600 transition-colors hover:bg-zinc-50 active:bg-zinc-100"
+          disabled={!selected}
+          onClick={() => onChange(Math.max(1, value - 1))}
+          className="flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-300 text-lg font-medium text-zinc-600 transition-colors hover:bg-zinc-50 active:bg-zinc-100 disabled:cursor-not-allowed"
         >
           −
         </button>
@@ -51,8 +64,9 @@ function CounterButton({
           {value}장 이상
         </span>
         <button
+          disabled={!selected}
           onClick={() => onChange(value + 1)}
-          className="flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-300 text-lg font-medium text-zinc-600 transition-colors hover:bg-zinc-50 active:bg-zinc-100"
+          className="flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-300 text-lg font-medium text-zinc-600 transition-colors hover:bg-zinc-50 active:bg-zinc-100 disabled:cursor-not-allowed"
         >
           +
         </button>
@@ -66,39 +80,63 @@ export function NotificationSettingsPage() {
   const [releaseRate, setReleaseRate] = useState(80);
   const [firstPrizeMin, setFirstPrizeMin] = useState(2);
   const [secondPrizeMin, setSecondPrizeMin] = useState(5);
+  const [prizeTarget, setPrizeTarget] = useState<"rnk1" | "rnk2">("rnk1");
   const [savedConditions, setSavedConditions] = useState<NotificationCondition[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  async function fetchNotifications() {
+    setIsLoading(true);
+    try {
+      const res = await fetch("/api/notifications");
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json.success) {
+        setSavedConditions(json.data);
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    fetchNotifications();
+  }, []);
 
   const currentSpitto = SPITTO_TYPES.find((t) => t.value === selectedType)!;
-  const expectedValue = calcExpectedValue(
-    currentSpitto.faceValue,
-    releaseRate,
-    firstPrizeMin,
-    secondPrizeMin,
-  );
-  const expectedDiff = expectedValue - currentSpitto.faceValue;
-  const expectedPct = ((expectedDiff / currentSpitto.faceValue) * 100).toFixed(0);
+  const remainingTickets = currentSpitto.avgPblcnQty * (1 - releaseRate / 100);
+  const activeCount = prizeTarget === "rnk1" ? firstPrizeMin : secondPrizeMin;
+  const currentProb = calcProbability(activeCount, remainingTickets);
+  const baseProb = calcProbability(activeCount, currentSpitto.avgPblcnQty);
+  const probDiff = currentProb - baseProb;
 
-  function handleAdd() {
-    setSavedConditions((prev) => [
-      ...prev,
-      {
-        id: crypto.randomUUID(),
-        spittoType: selectedType,
-        releaseRate,
-        firstPrizeMin,
-        secondPrizeMin,
-        enabled: true,
-      },
-    ]);
+  async function handleAdd() {
+    const body = {
+      spittoType: selectedType,
+      releaseRate,
+      rnk1RemainingMin: prizeTarget === "rnk1" ? firstPrizeMin : null,
+      rnk2RemainingMin: prizeTarget === "rnk2" ? secondPrizeMin : null,
+    };
+
+    const res = await fetch("/api/notifications", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      alert("알림 추가에 실패했습니다.");
+      return;
+    }
+
+    await fetchNotifications();
   }
 
-  function handleToggle(id: string) {
-    setSavedConditions((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, enabled: !c.enabled } : c)),
-    );
-  }
-
-  function handleDelete(id: string) {
+  async function handleDelete(id: number) {
+    const res = await fetch(`/api/notifications/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      alert("알림 삭제에 실패했습니다.");
+      return;
+    }
     setSavedConditions((prev) => prev.filter((c) => c.id !== id));
   }
 
@@ -109,7 +147,7 @@ export function NotificationSettingsPage() {
         <div className="rounded-xl border border-zinc-200 bg-white shadow-sm">
           <div className="border-b border-zinc-100 px-5 py-4">
             <h2 className="text-base font-semibold text-zinc-900">
-              새로운 알림 조건 만들기
+              🔔 알림설정
             </h2>
           </div>
 
@@ -166,6 +204,8 @@ export function NotificationSettingsPage() {
               label="🏆 1등 잔여 수량 (최소)"
               value={firstPrizeMin}
               onChange={setFirstPrizeMin}
+              selected={prizeTarget === "rnk1"}
+              onSelect={() => setPrizeTarget("rnk1")}
             />
 
             {/* 2등 잔여 수량 */}
@@ -173,6 +213,8 @@ export function NotificationSettingsPage() {
               label="🥈 2등 잔여 수량 (최소)"
               value={secondPrizeMin}
               onChange={setSecondPrizeMin}
+              selected={prizeTarget === "rnk2"}
+              onSelect={() => setPrizeTarget("rnk2")}
             />
 
             {/* 예상 기댓값 */}
@@ -182,16 +224,14 @@ export function NotificationSettingsPage() {
               </p>
               <div className="flex items-baseline gap-2">
                 <span className="text-xl font-bold text-[#0066b3]">
-                  {expectedValue.toLocaleString()}원
+                  {currentProb.toFixed(6)}%
                 </span>
                 <span
                   className={`text-sm font-medium ${
-                    expectedDiff >= 0 ? "text-green-600" : "text-red-500"
+                    probDiff >= 0 ? "text-green-600" : "text-red-500"
                   }`}
                 >
-                  (정상가 {currentSpitto.faceValue.toLocaleString()}원 대비{" "}
-                  {expectedDiff >= 0 ? "+" : ""}
-                  {expectedPct}%)
+                  (정상가 대비 {probDiff >= 0 ? "+" : ""}{probDiff.toFixed(6)}%)
                 </span>
               </div>
               <p className="mt-1.5 text-xs text-zinc-400">
@@ -210,7 +250,11 @@ export function NotificationSettingsPage() {
         </div>
 
         {/* 저장된 알림 목록 */}
-        {savedConditions.length > 0 && (
+        {isLoading ? (
+          <div className="rounded-xl border border-zinc-200 bg-white px-5 py-8 text-center text-sm text-zinc-400 shadow-sm">
+            알림 목록을 불러오는 중...
+          </div>
+        ) : savedConditions.length > 0 && (
           <div className="rounded-xl border border-zinc-200 bg-white shadow-sm">
             <div className="border-b border-zinc-100 px-5 py-4">
               <h2 className="text-base font-semibold text-zinc-900">
@@ -223,49 +267,30 @@ export function NotificationSettingsPage() {
 
             <div className="divide-y divide-zinc-100">
               {savedConditions.map((cond) => {
-                const spitto = SPITTO_TYPES.find(
-                  (t) => t.value === cond.spittoType,
-                )!;
-                const ev = calcExpectedValue(
-                  spitto.faceValue,
-                  cond.releaseRate,
-                  cond.firstPrizeMin,
-                  cond.secondPrizeMin,
-                );
+                const spittoValue = API_SPITTO_MAP[cond.spittoType];
+                const spitto = SPITTO_TYPES.find((t) => t.value === spittoValue)!;
+                const remaining = spitto.avgPblcnQty * (1 - cond.releaseRate / 100);
+                const condCount =
+                  (cond.rnk1RemainingMin ?? 0) + (cond.rnk2RemainingMin ?? 0);
+                const prob = calcProbability(condCount, remaining);
                 return (
                   <div key={cond.id} className="px-5 py-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-1.5">
-                        <span>🎫</span>
-                        <span className="text-sm font-semibold text-zinc-900">
-                          {spitto.label}
-                        </span>
-                      </div>
-                      <button
-                        onClick={() => handleToggle(cond.id)}
-                        className={[
-                          "flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition-colors",
-                          cond.enabled
-                            ? "bg-green-100 text-green-700 hover:bg-green-200"
-                            : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200",
-                        ].join(" ")}
-                      >
-                        <span
-                          className={`h-2 w-2 rounded-full ${
-                            cond.enabled ? "bg-green-500" : "bg-zinc-400"
-                          }`}
-                        />
-                        {cond.enabled ? "ON" : "OFF"}
-                      </button>
+                    <div className="flex items-center gap-1.5">
+                      <span>🎫</span>
+                      <span className="text-sm font-semibold text-zinc-900">
+                        {spitto.label}
+                      </span>
                     </div>
 
                     <ul className="mt-2 space-y-0.5 pl-6 text-xs text-zinc-500">
                       <li>• 출고율: {cond.releaseRate}% 이상</li>
-                      <li>
-                        • 잔여: 1등 {cond.firstPrizeMin}장 이상 / 2등{" "}
-                        {cond.secondPrizeMin}장 이상
-                      </li>
-                      <li>• 기댓값 조건: {ev.toLocaleString()}원 이상</li>
+                      {cond.rnk1RemainingMin !== null && (
+                        <li>• 1등 잔여: {cond.rnk1RemainingMin}장 이상</li>
+                      )}
+                      {cond.rnk2RemainingMin !== null && (
+                        <li>• 2등 잔여: {cond.rnk2RemainingMin}장 이상</li>
+                      )}
+                      <li>• 당첨확률: {prob.toFixed(6)}% 이상</li>
                     </ul>
 
                     <div className="mt-3 flex justify-end">

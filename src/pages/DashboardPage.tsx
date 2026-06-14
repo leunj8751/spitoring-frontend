@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from "react";
 
 interface DashboardItem {
-  gameTypeCd: string;
+  spittoType: string;
   gameTypeNm: string;
   draw: number;
   stockRate: number;
@@ -94,7 +94,7 @@ function AccordionItem({ item }: { item: DashboardItem }) {
 
 function sortItems(items: DashboardItem[], sortBy: (typeof SORT_OPTIONS)[number]["value"]) {
   return [...items].sort((a, b) => {
-    if (sortBy === "game_type") return a.gameTypeCd.localeCompare(b.gameTypeCd);
+    if (sortBy === "game_type") return a.spittoType.localeCompare(b.spittoType);
     if (sortBy === "current_prob_desc") return b.rnk1CurrentWinProbability - a.rnk1CurrentWinProbability;
     return 0;
   });
@@ -152,7 +152,7 @@ export function DashboardPage() {
         {!loading && !error && (
           <ul className="divide-y divide-zinc-100">
             {sorted.map((item) => (
-              <AccordionItem key={`${item.gameTypeCd}-${item.draw}`} item={item} />
+              <AccordionItem key={`${item.spittoType}-${item.draw}`} item={item} />
             ))}
           </ul>
         )}
